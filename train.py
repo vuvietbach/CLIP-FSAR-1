@@ -67,7 +67,6 @@ def train_epoch(
     logger.info(f"Norm 1d training: {norm_train if num_norms >0 else 'No norm'}")
     train_meter.iter_tic()
     data_size = len(train_loader)
-
     for cur_iter, (inputs, labels, indexes, meta) in enumerate(train_loader):
         # Transfer the data to the current GPU device.        
         if misc.get_num_gpus(cfg):

@@ -51,6 +51,8 @@ try:
 except ImportError:
     BICUBIC = Image.BICUBIC
 
+import torch.utils.checkpoint as cp
+
 
 if packaging.version.parse(torch.__version__) < packaging.version.parse("1.7.1"):
     warnings.warn("PyTorch version 1.7.1 or higher is recommended")
@@ -2746,9 +2748,9 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
         Takes in images from the support set and query video and returns CNN features.
         """
         if self.training:
-            support_features = self.backbone(support_images).squeeze()
+            support_features = cp.checkpoint(self.backbone, support_images).squeeze()
             # os.system("nvidia-smi")
-            target_features = self.backbone(target_images).squeeze()
+            target_features = cp.checkpoint(self.backbone, target_images).squeeze()
             # os.system("nvidia-smi")
 
             dim = int(support_features.shape[1])

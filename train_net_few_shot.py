@@ -22,7 +22,7 @@ import utils.bucket as bu
 from utils.meters import TrainMeter, ValMeter
 from ipdb import set_trace
 from models.base.builder import build_model
-from datasets.base.builder import build_loader, shuffle_dataset
+from datasets.base.builder import build_dataset, build_loader, shuffle_dataset
 
 from datasets.utils.mixup import Mixup
 
@@ -46,6 +46,8 @@ def train_epoch(
         writer (TensorboardWriter, optional): TensorboardWriter object
             to writer Tensorboard log.
     """
+    # wandb log train_acc, train_loss, val_acc, val_loss, lr, cur_iter
+    
     # Enable train mode.
     model.train()
     norm_train = False
@@ -56,9 +58,13 @@ def train_epoch(
     train_meter.iter_tic()
     data_size = len(train_loader)
 
-    data_size = cfg.SOLVER.STEPS_ITER     
+    data_size = cfg.SOLVER.STEPS_ITER    
+    
+    STEPS_PER_LOG = 50 
+    assert cfg.TRAIN.VAL_FRE_ITER % STEPS_PER_LOG == 0
+    
     for cur_iter, task_dict in enumerate(train_loader):
-        
+        wandb_log = {}
         '''['support_set', 'support_labels', 'target_set', 'target_labels', 'real_target_labels', 'batch_class_list', "real_support_labels"]'''
         if cur_iter >= cfg.TRAIN.NUM_TRAIN_TASKS:
                 break
@@ -73,14 +79,19 @@ def train_epoch(
             else:
                 model_bucket = None
             cur_epoch_save = cur_iter//cfg.TRAIN.VAL_FRE_ITER
-            cu.save_checkpoint(cfg.OUTPUT_DIR, model, model_ema, optimizer, cur_epoch_save+cfg.TRAIN.NUM_FOLDS-1, cfg, model_bucket)
+            cu.save_checkpoint(cfg.OUTPUT_DIR, model, model_ema, optimizer, cur_iter, cfg, model_bucket)
             
             val_meter.set_model_ema_enabled(False)
-            eval_epoch(val_loader, model, val_meter, cur_epoch_save+cfg.TRAIN.NUM_FOLDS-1, cfg, writer)
+            
+            val_res = eval_epoch(val_loader, model, val_meter, cur_epoch_save+cfg.TRAIN.NUM_FOLDS-1, cfg, writer)
+            wandb_log['val_acc'] = val_res['val_acc']
+            wandb_log['val_loss'] = val_res['val_loss']
+            
             if model_ema is not None:
                 val_meter.set_model_ema_enabled(True)
                 eval_epoch(val_loader, model_ema.module, val_meter, cur_epoch_save+cfg.TRAIN.NUM_FOLDS-1, cfg, writer)
             model.train()
+            
 
         if misc.get_num_gpus(cfg):
             for k in task_dict.keys():
@@ -102,6 +113,8 @@ def train_epoch(
         else:
            
             model_dict = model(task_dict)
+        
+        
 
         target_logits = model_dict['logits']
 
@@ -135,7 +148,7 @@ def train_epoch(
         else:
             
             loss =  F.cross_entropy(model_dict["logits"], task_dict["target_labels"].long()) /cfg.TRAIN.BATCH_SIZE
-       
+        
         # check Nan Loss.
         if math.isnan(loss):
             # logger.info(f"logits: {model_dict}")
@@ -270,6 +283,15 @@ def train_epoch(
 
         train_meter.log_iter_stats(cur_epoch, cur_iter)
         train_meter.iter_tic()
+        
+        if (cur_iter + 1) % STEPS_PER_LOG == 0:
+            wandb_log.update({
+                "lr": lr,
+                "cur_iter": cur_iter,
+                "train_loss_iter": loss,
+                "train_acc_iter": 100 - top1_err,
+            })
+            wandb.log(wandb_log)
 
     # Log epoch stats.
     train_meter.log_epoch_stats(cur_epoch+cfg.TRAIN.NUM_FOLDS-1)
@@ -294,7 +316,11 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
     # Evaluation mode enabled. The running stats would not be updated.
     model.eval()
     val_meter.iter_tic()
-
+    
+    total_loss = 0
+    total_acc = 0
+    num_tasks = len(val_loader)
+    
     for cur_iter, task_dict in enumerate(val_loader):
         if cur_iter >= cfg.TRAIN.NUM_TEST_TASKS:
             break
@@ -427,6 +453,10 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
 
         val_meter.log_iter_stats(cur_epoch, cur_iter)
         val_meter.iter_tic()
+        
+        total_loss += loss
+        total_acc += 100 - top1_err
+        
 
     # Log epoch stats.
     val_meter.log_epoch_stats(cur_epoch)
@@ -448,7 +478,19 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
                 preds=all_preds, labels=all_labels, global_step=cur_epoch
             )
 
+
     val_meter.reset()
+    
+    return {"val_loss": total_loss/num_tasks, "val_acc":total_acc/num_tasks}
+
+import wandb
+def init_wandb(cfg):
+    wandb.login(key="fa9099de08cfa896a63091aff05becd9345b786c")
+    wandb.init(
+        entity="aiotlab", 
+        project="few-shot-action-recognition", 
+        group="ata-sdtw", name=cfg.distance,
+    )    
 
 def train_few_shot(cfg):
     """
@@ -457,6 +499,13 @@ def train_few_shot(cfg):
         cfg (CfgNode): configs. Details can be found in
             slowfast/config/defaults.py
     """
+    # dataset = build_dataset('Ssv2_few_shot', cfg, 'test')
+    # unique_cls = dataset.split_few_shot.get_unique_classes()
+    # print(len(unique_cls))
+    # import pdb; pdb.set_trace()
+    
+    init_wandb(cfg)
+    
     # Set up environment.
     du.init_distributed_training(cfg)
     # Set random seed from configs.
@@ -493,7 +542,7 @@ def train_few_shot(cfg):
 
     # Create the video train and val loaders.
     train_loader = build_loader(cfg, "train")
-    val_loader = build_loader(cfg, "test") if cfg.TRAIN.EVAL_PERIOD != 0 else None  # val
+    val_loader = build_loader(cfg, "val") if cfg.TRAIN.EVAL_PERIOD != 0 else None  # val
 
     # Create meters.
     if cfg.DETECTION.ENABLE:

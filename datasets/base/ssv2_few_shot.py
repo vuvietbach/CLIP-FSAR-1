@@ -361,10 +361,15 @@ class Ssv2_few_shot(BaseVideoDataset):
         if self.cfg.TRAIN.META_BATCH:
             paths, vid_id = c.get_rand_vid(label, idx) 
             # imgs = self.load_and_transform_paths(paths)
-            if self.dataset_name == 'Ssv2_few_shot':
-                video_path = os.path.join(self.data_root_dir, paths + ".mp4")
+            
+            if hasattr(self.cfg.DATA, 'VIDEO_FORMAT'):
+                video_path = os.path.join(self.data_root_dir, paths + self.cfg.DATA.VIDEO_FORMAT)
             else:
-                video_path = os.path.join(self.data_root_dir, paths)
+                if self.dataset_name == 'Ssv2_few_shot':
+                    video_path = os.path.join(self.data_root_dir, paths + ".mp4")
+                else:
+                    video_path = os.path.join(self.data_root_dir, paths)
+            
             sample_info = {
                 "path": video_path,
                 # "supervised_label": class_,

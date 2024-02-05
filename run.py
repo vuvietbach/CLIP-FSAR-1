@@ -14,8 +14,8 @@ from test import test
 from train import train
 from train_net_few_shot import train_few_shot
 from test_net_few_shot import test_few_shot
-from test_epic_localization import test_epic_localization
-from submission_test import submission_test
+# from test_epic_localization import test_epic_localization
+# from submission_test import submission_test
 
 from utils.config import Config
 

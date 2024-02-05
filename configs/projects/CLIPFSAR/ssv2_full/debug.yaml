@@ -1,0 +1,3 @@
+_BASE: ./CLIPFSAR_SSv2_Full_1shot_v1.yaml
+
+OUTPUT_DIR: tmp/CLIPFSAR_SSv2_Full_1shot
