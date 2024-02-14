@@ -10,10 +10,10 @@ sys.path.append(os.path.abspath(os.curdir))
 
 from utils.launcher import launch_task
 
-from test import test
-from train import train
-from train_net_few_shot import train_few_shot
-from test_net_few_shot import test_few_shot
+from runs.test import test
+from runs.train import train
+from runs.train_net_few_shot import train_few_shot
+from runs.test_net_few_shot import test_few_shot
 # from test_epic_localization import test_epic_localization
 # from submission_test import submission_test
 

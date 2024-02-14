@@ -2688,7 +2688,7 @@ def OTAM_cum_dist_v2(dists, lbda=0.5):
     
     return cum_dists[:,:,-1,-1]
 
-
+from utils.utils import calculate_temporal_prior
 @HEAD_REGISTRY.register()
 class CNN_OTAM_CLIPFSAR(CNN_FSHead):
     """
@@ -2713,6 +2713,9 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
             # self.backbone = backbone.visual model.load_state_dict(state_dict)
             # self.backbone = CLIP
             self.mid_dim = 512
+            
+
+        
         with torch.no_grad():
             if hasattr(self.args.TEST, "PROMPT") and self.args.TEST.PROMPT:
                 text_templete = [self.args.TEST.PROMPT.format(self.class_real_train[int(ii)]) for ii in range(len(self.class_real_train))]
@@ -2728,7 +2731,13 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
             text_templete = tokenize(text_templete).cuda()
             
             self.text_features_test = backbone.encode_text(text_templete)
-        
+            
+            # STEP: ADD VAL CLASS
+            self.class_real_val = cfg.VAL.CLASS_NAME
+            text_templete = ["a photo of {}".format(self.class_real_val[int(ii)]) for ii in range(len(self.class_real_val))]
+            text_templete = tokenize(text_templete).cuda()
+            self.text_features_val = backbone.encode_text(text_templete)
+            # ADD VAL CLASS
         
         self.mid_layer = nn.Sequential() 
         self.classification_layer = nn.Sequential() 
@@ -2740,14 +2749,37 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
         else:
             self.context2 = Transformer_v1(dim=self.mid_dim, heads = 8, dim_head_k = self.mid_dim//8, dropout_atte = 0.2)
         # set_trace()
-                                                  
         
+        # STEP: temporal prior
+        if self.use_tpm:
+            T = calculate_temporal_prior(cfg.DATA.NUM_INPUT_FRAMES)
+            self.T = 1 - T.unsqueeze(0).unsqueeze(0)        
+    
+    def get_text_features(self, split, support_real_class):
+        text_feats = None
+        
+        if split == 'train':
+            text_feats = self.text_features_train
+        elif split == 'test':
+            text_feats = self.text_features_test
+        else:
+            text_feats = self.text_features_val
 
+        return text_feats[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1)
+
+        
+    
+    def use_tpm(self):
+        return hasattr(self.args, "TEMPO_PRIOR")
+        
     def get_feats(self, support_images, target_images, support_real_class=False, support_labels=False):
         """
         Takes in images from the support set and query video and returns CNN features.
         """
         if self.training:
+            support_images.requires_grad = True
+            target_images.requires_grad = True
+            
             support_features = cp.checkpoint(self.backbone, support_images).squeeze()
             # os.system("nvidia-smi")
             target_features = cp.checkpoint(self.backbone, target_images).squeeze()
@@ -2773,6 +2805,8 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
 
     def forward(self, inputs):
         support_images, support_labels, target_images, support_real_class = inputs['support_set'], inputs['support_labels'], inputs['target_set'], inputs['real_support_labels'] # [200, 3, 224, 224] inputs["real_support_labels"]
+        if self.use_tpm() and self.T.device != support_images.device:
+            self.T = self.T.to(support_images.device)
         
         # set_trace()
         if self.training:
@@ -2788,14 +2822,11 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
             else:
                 class_text_logits = None
             
+            # STEP: FIX CODE, please add checkpoint where needed
+            context_support = self.text_features_train[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1)
+            # FIX CODE
             
-            if self.training:
-                context_support = self.text_features_train[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1)
-            
-            else:
-                context_support = self.text_features_test[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1) # .repeat(support_bs+target_bs, 1, 1)
-            
-            target_features = self.context2(target_features, target_features, target_features)
+            target_features = cp.checkpoint(self.context2, target_features, target_features, target_features)
             context_support = self.mid_layer(context_support) 
             if hasattr(self.args.TRAIN, "MERGE_BEFORE") and self.args.TRAIN.MERGE_BEFORE:
                 unique_labels = torch.unique(support_labels)
@@ -2804,7 +2835,7 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
                 context_support = [torch.mean(torch.index_select(context_support, 0, extract_class_indices(support_labels, c)), dim=0) for c in unique_labels]
                 context_support = torch.stack(context_support)
             support_features = torch.cat([support_features, context_support], dim=1)
-            support_features = self.context2(support_features, support_features, support_features)[:,:self.args.DATA.NUM_INPUT_FRAMES,:]
+            support_features = cp.checkpoint(self.context2, support_features, support_features, support_features)[:,:self.args.DATA.NUM_INPUT_FRAMES,:]
             if hasattr(self.args.TRAIN, "MERGE_BEFORE") and self.args.TRAIN.MERGE_BEFORE:
                 pass
             else:
@@ -2828,6 +2859,10 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
             dists = rearrange(frame_dists, '(tb ts) (sb ss) -> tb sb ts ss', tb = n_queries, sb = n_support)  # [25, 25, 8, 8]
 
             # calculate query -> support and support -> query
+            # STEP: TEMPO PRIOR
+            if self.use_tpm():
+                dists *= self.T
+            # TEMPO PRIOR
             if hasattr(self.args.TRAIN, "SINGLE_DIRECT") and self.args.TRAIN.SINGLE_DIRECT:
                 cum_dists = OTAM_cum_dist_v2(dists)
             else:
@@ -2940,13 +2975,13 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
                 feature_classification = self.classification_layer(feature_classification_in).mean(1)
                 class_text_logits = cos_sim(feature_classification, self.text_features_train)*self.scale
 
-                
-                if self.training:
-                    context_support = self.text_features_train[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1)
+                # STEP: FIX CODE
+                if inputs['split'] == 'test':
+                    context_support = self.text_features_test[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1)
                 
                 else:
-                    context_support = self.text_features_test[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1) # .repeat(support_bs+target_bs, 1, 1)
-                
+                    context_support = self.text_features_val[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1) # .repeat(support_bs+target_bs, 1, 1)
+                # FIX CODE
                 target_features = self.context2(target_features, target_features, target_features)
                 if hasattr(self.args.TRAIN, "MERGE_BEFORE") and self.args.TRAIN.MERGE_BEFORE:
                     unique_labels = torch.unique(support_labels)
@@ -2978,6 +3013,10 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
                 dists = rearrange(frame_dists, '(tb ts) (sb ss) -> tb sb ts ss', tb = n_queries, sb = n_support)  # [25, 25, 8, 8]
 
                 # calculate query -> support and support -> query
+                # STEP: ADD TEMPO PRIOR
+                if self.use_tpm():
+                    dists *= self.T
+                # ADD TEMPO PRIOR
                 if hasattr(self.args.TRAIN, "SINGLE_DIRECT") and self.args.TRAIN.SINGLE_DIRECT:
                     cum_dists = OTAM_cum_dist_v2(dists)
                 else:

@@ -191,34 +191,33 @@ class Config(object):
         # maximum supported depth 3
         for idx, key in enumerate(keys):
             key_split = key.split('.')
-            assert len(key_split) <= 4, 'Key depth error. \nMaximum depth: 3\n Get depth: {}'.format(
-                len(key_split)
-            )
-            assert key_split[0] in cfg.keys(), 'Non-existant key: {}.'.format(
-                key_split[0]
-            )
-            if len(key_split) == 2:
-                assert key_split[1] in cfg[key_split[0]].keys(), 'Non-existant key: {}.'.format(
-                    key
-                )
-            elif len(key_split) == 3:
-                assert key_split[1] in cfg[key_split[0]].keys(), 'Non-existant key: {}.'.format(
-                    key
-                )
-                assert key_split[2] in cfg[key_split[0]][key_split[1]].keys(), 'Non-existant key: {}.'.format(
-                    key
-                )
-            elif len(key_split) == 4:
-                assert key_split[1] in cfg[key_split[0]].keys(), 'Non-existant key: {}.'.format(
-                    key
-                )
-                assert key_split[2] in cfg[key_split[0]][key_split[1]].keys(), 'Non-existant key: {}.'.format(
-                    key
-                )
-                assert key_split[3] in cfg[key_split[0]][key_split[1]][key_split[2]].keys(), 'Non-existant key: {}.'.format(
-                    key
-                )
-
+            # assert len(key_split) <= 4, 'Key depth error. \nMaximum depth: 3\n Get depth: {}'.format(
+            #     len(key_split)
+            # )
+            # assert key_split[0] in cfg.keys(), 'Non-existant key: {}.'.format(
+            #     key_split[0]
+            # )
+            # if len(key_split) == 2:
+            #     assert key_split[1] in cfg[key_split[0]].keys(), 'Non-existant key: {}.'.format(
+            #         key
+            #     )
+            # elif len(key_split) == 3:
+            #     assert key_split[1] in cfg[key_split[0]].keys(), 'Non-existant key: {}.'.format(
+            #         key
+            #     )
+            #     assert key_split[2] in cfg[key_split[0]][key_split[1]].keys(), 'Non-existant key: {}.'.format(
+            #         key
+            #     )
+            # elif len(key_split) == 4:
+            #     assert key_split[1] in cfg[key_split[0]].keys(), 'Non-existant key: {}.'.format(
+            #         key
+            #     )
+            #     assert key_split[2] in cfg[key_split[0]][key_split[1]].keys(), 'Non-existant key: {}.'.format(
+            #         key
+            #     )
+            #     assert key_split[3] in cfg[key_split[0]][key_split[1]][key_split[2]].keys(), 'Non-existant key: {}.'.format(
+            #         key
+            #     )
 
             if len(key_split) == 1:
                 cfg[key_split[0]] = vals[idx]
