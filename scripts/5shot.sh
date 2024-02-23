@@ -1,0 +1,2 @@
+python run.py --cfg configs/projects/CLIPFSAR/ssv2_full/CLIPFSAR_SSv2_Full_5shot_v1.yaml TEMPO_PRIOR 2.0
+python run.py --cfg configs/projects/CLIPFSAR/kinetics100/CLIPFSAR_K100_5shot_v1.yaml TEMPO_PRIOR 2.0
