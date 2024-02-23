@@ -52,6 +52,7 @@ except ImportError:
     BICUBIC = Image.BICUBIC
 
 import torch.utils.checkpoint as cp
+from torch.utils.checkpoint import checkpoint
 
 
 if packaging.version.parse(torch.__version__) < packaging.version.parse("1.7.1"):
@@ -638,7 +639,7 @@ class ResidualAttentionBlock(nn.Module):
 
     def forward(self, x: torch.Tensor):
         x = x + self.attention(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x + checkpoint(self.mlp, self.ln_2(x))
         return x
 
 
@@ -671,7 +672,7 @@ class VisionTransformer(nn.Module):
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
     def forward(self, x: torch.Tensor):
-        x = self.conv1(x)  # shape = [*, width, grid, grid]
+        x = checkpoint(self.conv1, x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
         x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
@@ -1058,9 +1059,9 @@ class Attention_qkv(nn.Module):
         b, n, _, h = *q.shape, self.heads
         bk = k.shape[0]
         # qkv = self.to_qkv(x).chunk(3, dim = -1)
-        q = self.to_q(q)
-        k = self.to_k(k)
-        v = self.to_v(v)
+        q = checkpoint(self.to_q, q)
+        k = checkpoint(self.to_k, k)
+        v = checkpoint(self.to_v, v)
         # q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), qkv)
         q = rearrange(q, 'b n (h d) -> b h n d', h = h)
         k = rearrange(k, 'b n (h d) -> b h n d', b=bk, h = h)
@@ -1642,19 +1643,31 @@ class MultiHeadAttention(nn.Module):
         return output
 
 
+# class FeedForward(nn.Module):
+#     def __init__(self, dim, hidden_dim, dropout = 0.):
+#         super().__init__()
+#         self.net = nn.Sequential(
+#             nn.Linear(dim, hidden_dim),
+#             nn.GELU(),
+#             nn.Dropout(dropout),
+#             nn.Linear(hidden_dim, dim),
+#             nn.Dropout(dropout)
+#         )
+#     def forward(self, x):
+#         return self.net(x)
 class FeedForward(nn.Module):
-    def __init__(self, dim, hidden_dim, dropout = 0.):
+    def __init__(self, dim, hidden_dim, dropout=0.0):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout)
-        )
-    def forward(self, x):
-        return self.net(x)
+        self.ff1 = nn.Linear(dim, hidden_dim)
+        self.act1 = nn.GELU()
+        self.drop1 = nn.Dropout(dropout)
+        self.ff2 = nn.Linear(hidden_dim, dim)
+        self.drop2 = nn.Dropout(dropout)
 
+    def forward(self, x):
+        x = self.drop1(self.act1(checkpoint(self.ff1, x)))
+        x = self.drop2(checkpoint(self.ff2, x))
+        return x
 
 
 class PositionalEncoder(nn.Module):
@@ -2731,7 +2744,6 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
             text_templete = tokenize(text_templete).cuda()
             
             self.text_features_test = backbone.encode_text(text_templete)
-            
             # STEP: ADD VAL CLASS
             self.class_real_val = cfg.VAL.CLASS_NAME
             text_templete = ["a photo of {}".format(self.class_real_val[int(ii)]) for ii in range(len(self.class_real_val))]
@@ -2751,10 +2763,11 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
         # set_trace()
         
         # STEP: temporal prior
-        if self.use_tpm:
+        if self.use_tpm():
             T = calculate_temporal_prior(cfg.DATA.NUM_INPUT_FRAMES)
-            self.T = 1 - T.unsqueeze(0).unsqueeze(0)        
-    
+            self.T = self.args.TEMPO_PRIOR * (1 - T.unsqueeze(0).unsqueeze(0))        
+            self.T.requires_grad_(False)
+
     def get_text_features(self, split, support_real_class):
         text_feats = None
         
@@ -2780,9 +2793,9 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
             support_images.requires_grad = True
             target_images.requires_grad = True
             
-            support_features = cp.checkpoint(self.backbone, support_images).squeeze()
+            support_features = self.backbone(support_images).squeeze()
             # os.system("nvidia-smi")
-            target_features = cp.checkpoint(self.backbone, target_images).squeeze()
+            target_features = self.backbone(target_images).squeeze()
             # os.system("nvidia-smi")
 
             dim = int(support_features.shape[1])
@@ -2826,7 +2839,7 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
             context_support = self.text_features_train[support_real_class.long()].unsqueeze(1)#.repeat(1, self.args.DATA.NUM_INPUT_FRAMES, 1)
             # FIX CODE
             
-            target_features = cp.checkpoint(self.context2, target_features, target_features, target_features)
+            target_features = self.context2(target_features, target_features, target_features)
             context_support = self.mid_layer(context_support) 
             if hasattr(self.args.TRAIN, "MERGE_BEFORE") and self.args.TRAIN.MERGE_BEFORE:
                 unique_labels = torch.unique(support_labels)
@@ -2835,7 +2848,7 @@ class CNN_OTAM_CLIPFSAR(CNN_FSHead):
                 context_support = [torch.mean(torch.index_select(context_support, 0, extract_class_indices(support_labels, c)), dim=0) for c in unique_labels]
                 context_support = torch.stack(context_support)
             support_features = torch.cat([support_features, context_support], dim=1)
-            support_features = cp.checkpoint(self.context2, support_features, support_features, support_features)[:,:self.args.DATA.NUM_INPUT_FRAMES,:]
+            support_features = self.context2(support_features, support_features, support_features)[:,:self.args.DATA.NUM_INPUT_FRAMES,:]
             if hasattr(self.args.TRAIN, "MERGE_BEFORE") and self.args.TRAIN.MERGE_BEFORE:
                 pass
             else:

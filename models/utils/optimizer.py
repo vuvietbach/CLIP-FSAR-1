@@ -97,6 +97,7 @@ def construct_optimizer(model, cfg):
             nesterov=cfg.OPTIMIZER.NESTEROV,
         )
     elif cfg.OPTIMIZER.OPTIM_METHOD == "adam":
+        # import pdb; pdb.set_trace()
         return torch.optim.Adam(
             optim_params,
             lr=cfg.OPTIMIZER.BASE_LR,

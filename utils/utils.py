@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 import os
 import torch
 import numpy as np
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
 def get_current_time_str():
     utc_now = datetime.utcnow()
 
@@ -10,11 +12,12 @@ def get_current_time_str():
 
     return vietnam_time.strftime("%d-%m_%H-%M")
 
-def save_checkpoint(save_path, model, optimizer, iter, scheduler=None, metadata=None):
+def save_checkpoint(save_path, model, iter, optimizer=None, scheduler=None, metadata=None):
     state = {
         "model": model.state_dict(),
-        "optimizer": optimizer.state_dict(),
     }
+    if optimizer is not None:
+        state["optimizer"] = optimizer.state_dict()
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
     
@@ -100,3 +103,11 @@ def calculate_temporal_prior(num_segments, sigma=1.0):
     T = 1 / (sigma * np.sqrt(2 * np.pi)) * torch.exp(T)
     T = T / T.sum(1, keepdim=True)
     return T
+
+def build_scheduler(optimizer, optimizer_cfg, scheduler_cfg):
+    min_lr = scheduler_cfg.min_lr if hasattr(scheduler_cfg, "min_lr") else optimizer_cfg.BASE_LR/100
+    T_0 = scheduler_cfg.T_0 if hasattr(scheduler_cfg, "T_0") else 1000
+    scheduler = CosineAnnealingWarmRestarts(
+        optimizer, T_0, eta_min=min_lr
+    )
+    return scheduler

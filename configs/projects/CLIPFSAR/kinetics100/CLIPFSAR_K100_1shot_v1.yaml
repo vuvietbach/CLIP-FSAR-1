@@ -9,11 +9,11 @@ TRAIN:
   NUM_SAMPLES: 1000000
   WAY: 5
   SHOT: 1
-  QUERY_PER_CLASS: 3
+  QUERY_PER_CLASS: 5
   MERGE_BEFORE: true
   QUERY_PER_CLASS_TEST: 1
   NUM_TRAIN_TASKS: 10000
-  NUM_TEST_TASKS: 10000
+  NUM_TEST_TASKS: 2000
   NUM_VAL_TASKS: 400
   VAL_FRE_ITER: 200
   LOG_FREQ: 50
@@ -35,7 +35,7 @@ VAL:
 TEST:
   ENABLE: false
   DATASET: Ssv2_few_shot
-  BATCH_SIZE: 4  # Same with NUM_GPUS
+  BATCH_SIZE: 1  # Same with NUM_GPUS
   TEST_SET: val
   CLASS_NAME: ['blasting sand',  'busking',  'cutting watermelon',  'dancing ballet', 'dancing charleston',  'dancing macarena',  'diving cliff', 'filling eyebrows', 'folding paper',  'hula hooping', 'hurling (sport)',  'ice skating',  'paragliding', 'playing drums',  'playing monopoly', 'playing trumpet', 'pushing car', 'riding elephant',  'shearing sheep', 'side kick', 'stretching arm', 'tap dancing', 'throwing axe',  'unboxing']
   NUM_ENSEMBLE_VIEWS: 1
@@ -43,21 +43,6 @@ TEST:
   AUTOMATIC_MULTI_SCALE_TEST: false
   UPLOAD_CLASSIFIER_RESULTS: true
 
-VAL:
-  CLASS_NAME: [
-    "Pushing [something] so it spins",
-    "Scooping [something] up with [something]",
-    "Lifting up one end of [something], then letting it drop down",
-    "Pretending or failing to wipe [something] off of [something]",
-    "Holding [something] over [something]",
-    "Lifting [something] up completely, then letting it drop down",
-    "Showing [something] to the camera",
-    "Taking [one of many similar things on the table]",
-    "Throwing [something] in the air and catching it",
-    "Plugging [something] into [something] but pulling it right out as you remove your hand",
-    "Pretending to pour [something] out of [something], but [something] is empty",
-    "Putting [something] in front of [something]",
-  ]
 DATA:
   DATA_ROOT_DIR: data/kinetics/videos
   ANNO_DIR: data/kinetics/annotations
@@ -107,3 +92,6 @@ debug: False
 
 CHECKPOINT:
   NUM_TO_KEEP: 3
+
+OPTIMIZER:
+  BASE_LR: 0.00001

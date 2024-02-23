@@ -27,6 +27,7 @@ from datasets.base.builder import build_dataset, build_loader, shuffle_dataset
 from datasets.utils.mixup import Mixup
 from tqdm import tqdm
 from utils.utils import CheckpointSaver, get_current_time_str, get_method, load_checkpoint, log_test_result, remove_file, save_checkpoint
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 logger = logging.get_logger(__name__)
 
@@ -63,26 +64,41 @@ def train_epoch(
     data_size = cfg.SOLVER.STEPS_ITER    
     
     # STEP: TRAIN ITERATION
+    T_0 = 1000
+    min_lr = 1e-7
+    scheduler = CosineAnnealingWarmRestarts(
+        optimizer, T_0, eta_min=min_lr
+    ) 
+    scheduler = None
+    
     ckpt_saver = CheckpointSaver(cfg.CHECKPOINT.NUM_TO_KEEP)
     last_ckpt_path = None
     loader_iter = iter(train_loader) 
     num_train_tasks = cfg.TRAIN.NUM_TRAIN_TASKS
+    avg_train_loss = []
+    avg_train_acc = []
+    LOG_FREQ = 50
+    
     for cur_iter in tqdm(range(num_train_tasks)):
-        # TRAIN ITERATION
+    # TRAIN ITERATION
+        wandb_log = {}
         # STEP: MOVE INPUT TO GPU
         task_dict = next(loader_iter)
         for k in task_dict.keys():
             task_dict[k] = task_dict[k][0]
         if misc.get_num_gpus(cfg):
             for k in task_dict.keys():
-                task_dict[k] = task_dict[k].cuda(non_blocking=True)
+                task_dict[k] = task_dict[k].cuda(non_blocking=True)        
+        task_dict['split'] = 'train'
+
         # MOVE INPUT TO GPU      
         
         # STEP: EVALUATE.
         val_log = None
         cur_epoch = cur_iter//cfg.SOLVER.STEPS_ITER
         # if (cur_iter + 1) % cfg.TRAIN.VAL_FRE_ITER == 0 and cur_iter>=200:   # 
-        if (cur_iter + 1) % cfg.TRAIN.VAL_FRE_ITER == 0:   # 
+        val_start_iter = cfg.TRAIN.VAL_START_ITER if hasattr(cfg.TRAIN, "VAL_START_ITER") else 0
+        if (cur_iter + 1) % cfg.TRAIN.VAL_FRE_ITER == 0 and (cur_iter + 1) >= val_start_iter:   # 
             # if cfg.OSS.ENABLE:
             #     model_bucket_name = cfg.OSS.CHECKPOINT_OUTPUT_PATH.split('/')[2]
             #     model_bucket = bu.initialize_bucket(cfg.OSS.KEY, cfg.OSS.SECRET, cfg.OSS.ENDPOINT, model_bucket_name)
@@ -94,16 +110,19 @@ def train_epoch(
             val_meter.set_model_ema_enabled(False)
             val_log = eval_epoch(val_loader, model, val_meter, cur_epoch_save+cfg.TRAIN.NUM_FOLDS-1, cfg, 'val', writer)
             
+            wandb_log['val_acc'] = val_log['val_acc']
+            wandb_log['val_loss'] = val_log['val_loss']
             # STEP: SAVE CHECKPOINT
             val_acc = val_log['val_acc']
-            save_path = os.path.join(cfg.OUTPUT_DIR, f'it{cur_iter+1}_acc{val_acc}.pt')
+            save_path = os.path.join(cfg.OUTPUT_DIR, f'it{cur_iter+1}_acc{val_acc:.2f}.pt')
             if ckpt_saver(val_log['val_acc'], save_path=save_path):
-                save_checkpoint(save_path, model, optimizer, cur_iter)
+                save_checkpoint(save_path, model, cur_iter)
             
             if last_ckpt_path != None:
                 remove_file(last_ckpt_path)
-            last_ckpt_path = os.path.join(cfg.OUTPUT_DIR, f'last_it{cur_iter+1}_acc{val_acc}.pt')
-            save_checkpoint(last_ckpt_path, model, optimizer, cur_iter)
+            last_ckpt_path = os.path.join(cfg.OUTPUT_DIR, f'last_it{cur_iter+1}_acc{val_acc:.2f}.pt')
+            save_checkpoint(last_ckpt_path, model, cur_iter)
+            
             model.train()
             # SAVE CHECKPOINT
             
@@ -115,6 +134,8 @@ def train_epoch(
         # Update the learning rate.
         lr = optim.get_epoch_lr(cur_epoch + cfg.TRAIN.NUM_FOLDS * float(cur_iter) / data_size, cfg)
         optim.set_lr(optimizer, lr)
+        lr = optimizer.param_groups[0]['lr']
+        wandb_log['lr'] = lr
 
         if cfg.DETECTION.ENABLE:
             # Compute the predictions.
@@ -173,7 +194,7 @@ def train_epoch(
         if ((cur_iter + 1) % cfg.TRAIN.BATCH_SIZE_PER_TASK == 0):
             optimizer.step()
             optimizer.zero_grad()
-        # self.scheduler.step()
+        # scheduler.step()
 
         if hasattr(cfg, "MULTI_MODAL") and\
             cfg.PRETRAIN.PROTOTYPE.ENABLE and\
@@ -266,6 +287,8 @@ def train_epoch(
                     top1_err.item(),
                     top5_err.item(),
                 )
+                avg_train_loss.append(loss)
+                avg_train_acc.append(1-top1_err/100)
 
             train_meter.iter_toc()
             # Update and log stats.
@@ -295,16 +318,14 @@ def train_epoch(
         train_meter.log_iter_stats(cur_epoch, cur_iter)
         train_meter.iter_tic()
         
+        if (cur_iter + 1) % LOG_FREQ == 0:
+            wandb_log[f'train_loss_{LOG_FREQ}'] = torch.mean(torch.tensor(avg_train_loss)).item()
+            wandb_log[f'train_acc_{LOG_FREQ}'] = torch.mean(torch.tensor(avg_train_acc)).item()
+            avg_train_acc = []
+            avg_train_loss = []
+            
         # STEP: LOG WANDB
         if not cfg.debug:
-            wandb_log = {
-                "train_loss": loss,
-                "train_acc": 100 - top1_err,
-                "lr": lr
-            }
-            if val_log != None:
-                wandb_log.update(val_log)
-
             wandb.log(wandb_log)
         # LOG WANDB
 
@@ -316,7 +337,7 @@ def train_epoch(
     if last_ckpt_path != None:
         remove_file(last_ckpt_path)
     last_ckpt_path = os.path.join(cfg.OUTPUT_DIR, f'last_it{cur_iter+1}.pt')
-    save_checkpoint(last_ckpt_path, model, optimizer, cur_iter)
+    save_checkpoint(last_ckpt_path, model, cur_iter)
     
     return ckpt_saver
 
@@ -350,7 +371,11 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, split, writer=None)
         num_val_tasks = cfg.TRAIN.NUM_VAL_TASKS
     
     for cur_iter in tqdm(range(num_val_tasks)):
-        task_dict = next(loader_iter)
+        try:
+            task_dict = next(loader_iter)
+        except:
+            loader_iter = iter(val_loader)
+            task_dict = next(loader_iter)
         for k in task_dict.keys():
             task_dict[k] = task_dict[k][0]
         if misc.get_num_gpus(cfg):
@@ -517,13 +542,15 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, split, writer=None)
     
     val_loss = torch.mean(torch.tensor(val_loss)).item()
     val_acc = torch.mean(torch.tensor(val_acc)).item()
-    return {"val_loss": val_loss, "val_acc":val_acc}
+    return {"val_loss": val_loss, "val_acc":val_acc/100.0}
 
 import wandb
 from dotenv import load_dotenv
 
 def init_session(cfg):
     if hasattr(cfg, 'debug') and cfg.debug:
+        cfg.OUTPUT_DIR = os.path.join('debug', get_current_time_str())
+    elif hasattr(cfg, 'test_only') and cfg.test_only:
         cfg.OUTPUT_DIR = os.path.join('debug', get_current_time_str())
     else:
         run_name = get_method(cfg)
@@ -539,6 +566,7 @@ def init_session(cfg):
     os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
     cfg.TRAIN.LOG_FILE = 'log.txt'
 
+
 def train_few_shot(cfg):
     """
     Train a video model for many epochs on train set and evaluate it on val set.
@@ -552,10 +580,10 @@ def train_few_shot(cfg):
     # import pdb; pdb.set_trace()
     if hasattr(cfg, "TEMPO_PRIOR"):
         cfg.TEMPO_PRIOR = float(cfg.TEMPO_PRIOR)
+    if hasattr(cfg, 'test_only'):
+        cfg.test_only = (cfg.test_only == "True")
     init_session(cfg)
 
-    
-    
     # Set up environment.
     du.init_distributed_training(cfg)
     # Set random seed from configs.
@@ -635,17 +663,20 @@ def train_few_shot(cfg):
 
     cur_epoch = 0
     shuffle_dataset(train_loader, cur_epoch)
-    
-    ckpt_saver = train_epoch(
-        train_loader, model, model_ema, optimizer, train_meter, cur_epoch, mixup_fn, cfg, writer, val_meter, val_loader
-    )
-    
-    best_ckpt_path = ckpt_saver.get_best_checkpoint_path()
-    load_checkpoint(best_ckpt_path, model)
+    if not hasattr(cfg, 'test_only') or not cfg.test_only:
+        ckpt_saver = train_epoch(
+            train_loader, model, model_ema, optimizer, train_meter, cur_epoch, mixup_fn, cfg, writer, val_meter, val_loader
+        )
+        best_ckpt_path = ckpt_saver.get_best_checkpoint_path()
+        load_checkpoint(best_ckpt_path, model)
+    else:
+        best_ckpt_path = cfg.checkpoint_loadpath
+        load_checkpoint(cfg.checkpoint_loadpath, model)
     
     res = eval_epoch(
         test_loader, model, val_meter, cur_epoch, cfg, 'test', writer
     )
+    
     log_test_result(
         cfg, best_ckpt_path, res['val_acc']
     ) 

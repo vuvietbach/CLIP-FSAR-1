@@ -514,12 +514,13 @@ class Ssv2_few_shot(BaseVideoDataset):
 
 
     def __len__(self):
-        if hasattr(self.cfg.TRAIN, "META_BATCH") and self.split == 'train' and self.cfg.TRAIN.META_BATCH:
-            return self.cfg.TRAIN.NUM_SAMPLES
-        elif hasattr(self.cfg.TRAIN, "NUM_TEST_TASKS") and self.cfg.TRAIN.NUM_TEST_TASKS:
-            return self.cfg.TRAIN.NUM_TEST_TASKS
-        else:
-            return len(self.split_few_shot)  # len(self._samples)
+        return 1000000
+        # if hasattr(self.cfg.TRAIN, "META_BATCH") and self.split == 'train' and self.cfg.TRAIN.META_BATCH:
+        #     return self.cfg.TRAIN.NUM_SAMPLES
+        # elif hasattr(self.cfg.TRAIN, "NUM_TEST_TASKS") and self.cfg.TRAIN.NUM_TEST_TASKS:
+        #     return self.cfg.TRAIN.NUM_TEST_TASKS
+        # else:
+        #     return len(self.split_few_shot)  # len(self._samples)
     
 
     def _config_transform(self):
